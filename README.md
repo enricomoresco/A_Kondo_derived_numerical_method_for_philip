@@ -1,4 +1,4 @@
-# Tidal Gain of Bay–Channel Systems (Method 4)
+# Tidal Gain of Bay–Channel Systems 
 
 Two small, dependency-light Python programs that compute the **tidal gain**
 
@@ -6,7 +6,7 @@ $$G = \frac{a_b}{a_s}$$
 
 of one or more bays connected to the open sea through frictional channels, using
 a lumped **resistance–inertance (R–L) network** with a Lorentz-linearised,
-amplitude-dependent friction term that is solved **self-consistently** ("Method 4").
+amplitude-dependent friction term that is solved **self-consistently** .
 
 The model generalises the classical single-inlet treatment of
 Kondo (1975) to (i) an arbitrary number of parallel inlets and
@@ -58,7 +58,7 @@ R_e -> Z_e -> eta_m -> Q_e -> beta_e |Q_e| -> R_e
 ```
 
 until the resistances and the bay elevations stop changing. This is the
-"fully self-consistent" Method 4; the amplitude of the forcing therefore matters,
+"fully self-consistent"; the amplitude of the forcing therefore matters,
 and the gain curves are **not** the same for different `a_s`.
 
 ---
