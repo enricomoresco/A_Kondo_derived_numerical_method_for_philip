@@ -1,22 +1,24 @@
-# Tidal Gain of Bay–Channel Systems 
+# Harmonic Response of Semi-Enclosed Basins
 
-Two small, dependency-light Python programs that compute the **tidal gain**
+Two dependency-light Python programs that compute the **tidal gain**
 
 $$G = \frac{a_b}{a_s}$$
 
-of one or more bays connected to the open sea through frictional channels, using
-a lumped **resistance–inertance (R–L) network** with a Lorentz-linearised,
-amplitude-dependent friction term that is solved **self-consistently** .
+of one or more semi-enclosed basins connected to the open sea through frictional
+inlets, using a lumped **resistance–inertance (R–L) network** with the quadratic
+drag treated by Lorentz equivalent linearisation, closed **self-consistently** on
+the forcing amplitude. A perturbative first secondary harmonic (`3 omega`) is
+computed on top of the fundamental.
 
-The model generalises the classical single-inlet treatment of
-Kondo (1975) to (i) an arbitrary number of parallel inlets and
-(ii) an arbitrary network of interconnected bays and channels.
+The formulation generalises the classical single-inlet treatment to (i) an
+arbitrary number of parallel inlets and (ii) an arbitrary network of
+interconnected basins and channels.
 
 ---
 
 ## Physical model
 
-Each channel `e` is represented as a series impedance
+Each channel `e` is a series impedance
 
 ```
 Z_e = R_e + i * omega * L_e
@@ -35,14 +37,13 @@ R_e    = beta_e * |Q_e|
 beta_e = 8 * l_e * n_e^2 / (3 * pi * A_e^2 * Rh_e^(4/3))
 ```
 
-Each bay `m` acts as a storage element (compliance) of surface area `S_m`, so that
-continuity at the bay reads
+Each basin `m` is a storage element of surface area `S_m`, so continuity reads
 
 ```
 i * omega * S_m * eta_m = sum_e Y_e * (eta_neighbour - eta_m),      Y_e = 1 / Z_e
 ```
 
-For a rectangular cross-section the geometry is derived from the input as
+For a rectangular cross-section the geometry follows from the input as
 
 ```
 A_e  = B_e * D_e
@@ -57,9 +58,38 @@ nonlinear. Both programs close it with a **damped fixed-point iteration**
 R_e -> Z_e -> eta_m -> Q_e -> beta_e |Q_e| -> R_e
 ```
 
-until the resistances and the bay elevations stop changing. This is the
-"fully self-consistent"; the amplitude of the forcing therefore matters,
-and the gain curves are **not** the same for different `a_s`.
+until resistances and basin elevations stop changing. The response is therefore
+amplitude-dependent: the gain curves are **not** the same for different `a_s`.
+
+### First secondary harmonic
+
+Equivalent linearisation retains only the fundamental of the quadratic drag.
+Expanding `Q|Q|` for `Q_e = |Q_e| cos(theta_e)` gives odd harmonics only,
+
+```
+Q|Q| = |Q|^2 * sum_{n odd} 8 (-1)^((n-1)/2) cos(n theta) / (pi n (4 - n^2))
+```
+
+The `n = 1` term is the Lorentz resistance. Once the fundamental has converged the
+`n = 3` term is a *known* source, so the `3 omega` problem is **linear**: the same
+nodal system, reassembled at `3 omega`, with
+
+```
+R_e^(3) = (3/2) * beta_e * |Q_e|          (from <2|Q| |cos|> = (4/pi)|Q|)
+S_e     = (1/5) * beta_e * Q_e^3 / |Q_e|  (branch e.m.f. at 3 omega)
+```
+
+and `eta3 = 0` at the external boundaries, the forcing being monochromatic. This
+costs **one extra linear solve per point** — a few percent of the run time — and
+is enabled by default (`--no-third-harmonic` disables it).
+
+For a single basin with a single inlet the result reduces to the closed-form
+third-harmonic amplitude of the accompanying manuscript, to machine precision.
+
+The perturbation is meaningful only while `|eta3| << |eta1|`. Points where the
+ratio exceeds 0.10 are flagged `[PERTURBATION SUSPECT]` in the console report.
+For reference, the single-basin analysis bounds the ratio by `2/45 ~ 0.0444`, and
+that bound is drawn on the third-harmonic figures.
 
 ---
 
@@ -67,16 +97,16 @@ and the gain curves are **not** the same for different `a_s`.
 
 | File | Purpose |
 |---|---|
-| `gain_method4_frequency_amplitude.py` | Single bay, `N` channels **in parallel**. Sweeps `omega` and `a_s`, produces `G(omega)` curves. |
-| `network_method4.py` | General network of `M` bays and `N` channels with arbitrary topology and multiple external boundaries. |
-| `esempio_canali_method4.txt` | Example input for the parallel-channel program (17 channels). |
-| `network_example.txt` | Example input for the network program (3 bays, 7 channels). |
+| `multi_inlet_response.py` | One basin, `N` inlets **in parallel**. Sweeps `omega` and `a_s`, produces `G(omega)` curves. |
+| `basin_network_response.py` | General network of `M` basins and `N` channels, arbitrary topology, multiple open boundaries. |
+| `example_multi_inlet.txt` | Example input for the parallel-inlet program (17 inlets). |
+| `example_network.txt` | Example input for the network program (3 basins, 7 channels). |
 
 ---
 
 ## Requirements
 
-- Python ≥ 3.8
+- Python >= 3.8
 - `numpy`
 - `matplotlib`
 
@@ -86,11 +116,11 @@ pip install numpy matplotlib
 
 ---
 
-## 1. Parallel channels — `gain_method4_frequency_amplitude.py`
+## 1. Parallel inlets — `multi_inlet_response.py`
 
-A single bay of surface area `S` is connected to the sea by `N` channels in parallel.
-The program computes `G(omega)` for a set of forcing amplitudes and produces a
-frequency-response plot with the 24 h and M2 tidal frequencies marked.
+A single basin of surface area `S` connected to the sea by `N` inlets in parallel.
+The program computes `G(omega)` for a set of forcing amplitudes and marks the 24 h
+and M2 tidal frequencies on the frequency-response plot.
 
 ### Input format
 
@@ -98,46 +128,47 @@ Whitespace-separated values, one keyword per line; `#` starts a comment.
 
 ```
 N   = 2
-L   = 3200 4500          # channel lengths [m]
-D   = 1.2 3.4            # channel depths [m]
-B   = 150 255.4          # channel widths [m]
+L   = 3200 4500          # inlet lengths [m]
+D   = 1.2 3.4            # inlet depths [m]
+B   = 150 255.4          # inlet widths [m]
 kse = 30 30              # Strickler coefficients [m^(1/3)/s]
-S   = 10000000           # bay surface area [m^2]
+S   = 10000000           # basin surface area [m^2]
 ```
 
-`L`, `D`, `B` and `kse` must each contain exactly `N` positive values.
-An `a_s` entry may be present but is **ignored**: the forcing amplitude is swept
-by the program.
+`L`, `D`, `B` and `kse` must each contain exactly `N` positive values. An `a_s`
+entry may be present but is **ignored**: the forcing amplitude is swept.
 
 ### Usage
 
 ```bash
-python gain_method4_frequency_amplitude.py esempio_canali_method4.txt --show
+python multi_inlet_response.py example_multi_inlet.txt --show
 ```
 
-The swept ranges are set at the top of the file
-(`OMEGA_MIN`, `OMEGA_MAX`, `N_OMEGA`, `AMPLITUDES`).
+Swept ranges are set at the top of the file (`OMEGA_MIN`, `OMEGA_MAX`, `N_OMEGA`,
+`AMPLITUDES`).
 
 ### Output
 
 Written next to the input file, using its stem as prefix:
 
-- `<stem>_gain_method4_frequency_amplitude.png` / `.pdf` — `G(omega)`, one curve per amplitude
-- `<stem>_gain_method4_frequency_amplitude.csv` — columns `omega_rad_s`, `G_as_<a>m`, ...
+- `<stem>_response.png` / `.pdf` — `G(omega)`, one curve per amplitude
+- `<stem>_response.csv` — `omega_rad_s`, then `G_as_<a>m` and
+  `eta3_over_eta1_as_<a>m` for each amplitude
+- `<stem>_third_harmonic.png` — relative amplitude of the `3 omega` harmonic
 
 ---
 
-## 2. Networks — `network_method4.py`
+## 2. Networks — `basin_network_response.py`
 
-An arbitrary graph of bays (dynamic nodes with storage) and external boundaries
+An arbitrary graph of basins (dynamic nodes with storage) and external boundaries
 (nodes with a prescribed harmonic level), connected by channels. Channels may link
-a boundary to a bay or two bays to each other; boundary-to-boundary channels are
-rejected because they do not affect the bay dynamics.
+a boundary to a basin or two basins to each other; boundary-to-boundary channels
+are rejected, since they do not affect the basin dynamics.
 
 ### Input format
 
-Comma-separated records; `#` starts a comment. `N_bays` and `N_channels`, if given,
-are checked against the number of records actually declared.
+Comma-separated records; `#` starts a comment. `N_bays` and `N_channels`, if
+given, are checked against the number of records actually declared.
 
 ```
 N_bays     = 3
@@ -157,15 +188,15 @@ channel , C5 , B1  , B2 , 5000 , 2.0 , 180.0 , 30
 ```
 
 Several boundaries can be declared, each with its own amplitude factor and phase:
-the imposed elevation is `a_s * factor * exp(i * phase)`. This allows, for instance,
-a strait open at both ends with a phase lag between the two seas.
+the imposed elevation is `a_s * factor * exp(i * phase)`. This allows, for
+instance, a strait open at both ends with a phase lag between the two seas.
 
 ### Usage
 
 ```bash
-python network_method4.py network_example.txt --show
+python basin_network_response.py example_network.txt --show
 
-python network_method4.py network_example.txt \
+python basin_network_response.py example_network.txt \
     --omega-min 1e-5 --omega-max 1e-3 --nfreq 500 \
     --amplitudes 0.05 0.1 0.2 0.5 1 2 5 --show
 ```
@@ -175,41 +206,49 @@ python network_method4.py network_example.txt \
 | `--omega-min` | `1e-5` | minimum angular frequency [rad/s] |
 | `--omega-max` | `1e-3` | maximum angular frequency [rad/s] |
 | `--nfreq` | `400` | number of log-spaced frequencies |
-| `--amplitudes` | `0.05 … 5` | incoming amplitudes `a_s` [m] |
+| `--amplitudes` | `0.05 ... 5` | incoming amplitudes `a_s` [m] |
 | `--tol` | `1e-10` | fixed-point tolerance |
 | `--itmax` | `5000` | maximum number of iterations |
-| `--relax` | `0.5` | relaxation factor, `0 < relax ≤ 1` |
+| `--relax` | `0.5` | relaxation factor, `0 < relax <= 1` |
+| `--no-third-harmonic` | off | skip the `3 omega` correction |
 | `--show` | off | display the plots in addition to saving them |
 
 ### Output
 
-- `<stem>_network_method4.csv` — long format: `a_s_m`, `omega_rad_s`, `period_h`,
-  then `G_<bay>` and `phase_<bay>_deg` for every bay, plus `iterations` and `converged`
-- `<stem>_network_method4.npz` — full complex fields: `eta` (bays), `Q` and `R` (channels),
-  with shapes `(n_amplitudes, n_frequencies, n_nodes/n_channels)`
-- `<stem>_gain_<bay>.png` — one frequency-response plot per bay
+- `<stem>_response.csv` — long format: `a_s_m`, `omega_rad_s`, `period_h`, then
+  `G_<basin>`, `phase_<basin>_deg`, `G3_<basin>`, `phase3_<basin>_deg` for every
+  basin, plus `iterations` and `converged`
+- `<stem>_response.npz` — full complex fields: `eta`, `eta3` (basins), `Q`, `Q3`
+  and `R` (channels), with shapes `(n_amplitudes, n_frequencies, n_nodes/n_channels)`
+- `<stem>_gain_<basin>.png` — one frequency-response plot per basin
+- `<stem>_third_<basin>.png` — relative amplitude of the `3 omega` harmonic per basin
 
-The console report lists, for every bay and amplitude, the peak gain and the
-corresponding angular frequency and period.
+The console report lists, for every basin and amplitude, the peak gain, the
+corresponding angular frequency and period, and the largest third-harmonic ratio
+over the sweep.
 
 ---
 
 ## Numerical notes
 
 - **Continuation in frequency.** In the network solver the converged resistances at
-  one frequency are reused as the initial guess for the next one, which makes the
-  sweep considerably cheaper and more robust.
+  one frequency seed the next one, which makes the sweep cheaper and more robust.
 - **Relaxation.** The fixed point is damped (`relax = 0.5` by default). Strongly
   frictional or strongly resonant configurations may need a smaller value.
-- **Convergence.** Non-converged points are flagged in the CSV (`converged = 0`) and
-  summarised on screen; results at those points should not be trusted blindly.
-- The initial guess for the parallel-channel program comes from a closed-form
-  ("Method 2") estimate of the gain and of the discharge shares, which is why it
-  typically converges in a few tens of iterations.
+- **Convergence.** Non-converged points are flagged in the CSV (`converged = 0`)
+  and summarised on screen; results there should not be trusted blindly.
+- **Cost.** A sweep of 400 frequencies by 7 amplitudes on a three-basin network runs
+  in a few seconds; the third-harmonic correction adds roughly 4% to that.
+- The initial guess for the parallel-inlet program comes from a closed-form estimate
+  of the gain and of the discharge shares, which is why it converges in a few tens
+  of iterations.
 
 ---
 
-## Reference
+## References
 
 Kondo, H. (1975). *Depth of Maximum Velocity and Minimum Flow Area of Tidal Entrances*.
 Coastal Engineering in Japan, 18(1), 167–183.
+
+Lorentz, H. A. (1922). *Het in rekening brengen van den weerstand bij schommelende
+vloeistofbewegingen*. De Ingenieur, 37(36), 695–696.
