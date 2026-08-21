@@ -33,6 +33,7 @@ forcing amplitude is swept.
 from __future__ import annotations
 
 import argparse
+import cmath
 import math
 from pathlib import Path
 
@@ -41,6 +42,10 @@ import matplotlib.pyplot as plt
 
 
 G_GRAV = 9.81
+
+# Quality thresholds for the third harmonic, on the per-inlet |Q3|/|Q1|.
+Q3_CAUTION = 0.20
+Q3_WARN = 0.50
 
 # ------------------------------------------------------------
 # DEFAULT RANGES
@@ -91,8 +96,9 @@ def read_input(path):
                 )
 
             elif key == "a_s":
-                # Ignored: a_s is swept in this program.
-                pass
+                # Optional: used as the default amplitude of a
+                # single-point run, ignored by the sweep.
+                data[key] = float(vals[0])
 
             else:
                 raise ValueError(
@@ -270,6 +276,41 @@ def gain_from_equivalent(
 # FIRST SECONDARY HARMONIC
 # ============================================================
 
+def complex_response(
+    S,
+    omega,
+    a_s,
+    inertance,
+    rgeo,
+    G,
+    phi
+):
+    """
+    Complex basin elevation and channel discharges of the fundamental,
+    with the sea level taken as the real reference a_s + 0j:
+
+        eta1 = Ysum a_s / (Ysum + i omega S)
+        Q1_j = Y_j a_s i omega S / (Ysum + i omega S)
+
+    so |eta1|/a_s reproduces the gain G and arg(eta1) is the phase lag.
+    """
+
+    _, _, Y, Ysum = equivalent_impedance(
+        G,
+        phi,
+        inertance,
+        rgeo,
+        omega
+    )
+
+    denom = Ysum + 1j * omega * S
+
+    eta1 = Ysum * a_s / denom
+    Q1 = Y * a_s * 1j * omega * S / denom
+
+    return eta1, Q1
+
+
 def third_harmonic(
     S,
     omega,
@@ -298,19 +339,15 @@ def third_harmonic(
     Returns the complex eta3 and the complex fundamental eta1.
     """
 
-    _, _, Y, Ysum = equivalent_impedance(
-        G,
-        phi,
+    eta1, Q1 = complex_response(
+        S,
+        omega,
+        a_s,
         inertance,
         rgeo,
-        omega
+        G,
+        phi
     )
-
-    # Complex fundamental, with the sea level taken as a_s + 0j
-    denom = Ysum + 1j * omega * S
-
-    eta1 = Ysum * a_s / denom
-    Q1 = Y * a_s * 1j * omega * S / denom
 
     beta = rgeo / (S * a_s)
 
@@ -330,7 +367,38 @@ def third_harmonic(
         / (3j * omega * S + np.sum(Y3))
     )
 
-    return eta3, eta1
+    Q3 = Y3 * (-eta3 - source)
+
+    return eta3, eta1, Q3
+
+
+def third_harmonic_quality(ratio_max):
+    """Return (level, lines) describing how far the perturbation is trusted.
+
+    The test is the per-inlet ratio |Q3|/|Q1|. For a single basin it stays
+    around 0.1 - 0.15 (exactly 2/15 in the friction-dominated limit of a
+    single inlet), and validation against a time-domain integration of the
+    same equations puts the error on the 3*omega amplitude within about 10%
+    there. Larger values mean 3*omega is close to a resonance.
+    The fundamental is not affected in either case.
+    """
+
+    if ratio_max > Q3_WARN:
+        return "warn", [
+            "3*omega is at or near a resonance, so the perturbation has "
+            "broken down:",
+            "treat the 3w amplitude as indicative only. "
+            "The fundamental is not affected.",
+        ]
+
+    if ratio_max > Q3_CAUTION:
+        return "caution", [
+            "3*omega is approaching a resonance: the 3w amplitude may be "
+            "in error by",
+            "more than 10%. The fundamental is not affected.",
+        ]
+
+    return "ok", []
 
 
 # ============================================================
@@ -420,13 +488,20 @@ def self_consistent_gain(
 # MAIN
 # ============================================================
 
-def main():
+def build_parser():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Basin gain as a function of omega "
-            "for several forcing amplitudes."
-        )
+            "Tidal gain of a single basin connected to the sea "
+            "by N inlets in parallel."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  one point   : %(prog)s inlets.txt --period 12.42 --amplitude 0.8\n"
+            "  full sweep  : %(prog)s inlets.txt\n"
+            "  custom sweep: %(prog)s inlets.txt --amplitudes 0.2 1 --nfreq 800"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument(
@@ -434,21 +509,180 @@ def main():
         help="input .txt file"
     )
 
-    parser.add_argument(
-        "--no-third-harmonic",
-        action="store_true",
+    point = parser.add_argument_group(
+        "single point (give --omega or --period to use it)"
+    )
+
+    point.add_argument(
+        "--omega",
+        type=float,
+        help="forcing angular frequency [rad/s]"
+    )
+
+    point.add_argument(
+        "--period",
+        type=float,
+        help="forcing period [hours], alternative to --omega"
+    )
+
+    point.add_argument(
+        "--amplitude",
+        type=float,
         help=(
-            "skip the perturbative 3*omega correction "
-            "(it costs a few percent of the run time)"
+            "sea amplitude a_s [m]; "
+            "defaults to the a_s of the input file"
         )
     )
 
-    parser.add_argument(
+    point.add_argument(
+        "--inlets",
+        action="store_true",
+        help="also list the discharge carried by each inlet"
+    )
+
+    sweep = parser.add_argument_group("sweep")
+
+    sweep.add_argument(
+        "--amplitudes",
+        type=float,
+        nargs="+",
+        default=list(AMPLITUDES),
+        help="sea amplitudes to compare [m]"
+    )
+
+    sweep.add_argument(
+        "--omega-min",
+        type=float,
+        default=OMEGA_MIN,
+        help="minimum angular frequency [rad/s]"
+    )
+
+    sweep.add_argument(
+        "--omega-max",
+        type=float,
+        default=OMEGA_MAX,
+        help="maximum angular frequency [rad/s]"
+    )
+
+    sweep.add_argument(
+        "--nfreq",
+        type=int,
+        default=N_OMEGA,
+        help="number of log-spaced frequencies"
+    )
+
+    sweep.add_argument(
         "--show",
         action="store_true",
         help="display the plot"
     )
 
+    return parser
+
+
+def solve_point(data, omega, a_s):
+    """Fundamental response at one frequency and one amplitude."""
+
+    S = data["s"]
+
+    A, Rh, inertance, rgeo = prepare_geometry(data, a_s)
+
+    G, phi, nit, ok = self_consistent_gain(
+        S,
+        omega,
+        inertance,
+        rgeo
+    )
+
+    eta1, Q1 = complex_response(
+        S,
+        omega,
+        a_s,
+        inertance,
+        rgeo,
+        G,
+        phi
+    )
+
+    return G, phi, eta1, Q1, inertance, rgeo, ok
+
+
+def report_point(data, omega, a_s, show_inlets):
+
+    G, phi, eta1, Q1, inertance, rgeo, ok = solve_point(
+        data,
+        omega,
+        a_s
+    )
+
+    S = data["s"]
+
+    eta3, _, Q3 = third_harmonic(
+        S,
+        omega,
+        a_s,
+        inertance,
+        rgeo,
+        G,
+        phi
+    )
+
+    qratio = np.abs(Q3) / np.abs(Q1)
+
+    period_h = 2.0 * math.pi / omega / 3600.0
+    lag_deg = -math.degrees(cmath.phase(eta1))
+    lag_h = lag_deg / 360.0 * period_h
+
+    print()
+    print(
+        f"Forcing    a_s = {a_s:g} m"
+        f"     omega = {omega:.4e} rad/s"
+        f"     T = {period_h:.3f} h"
+    )
+    print()
+    print(f"  gain             G = {G:.4f}")
+    print(f"  basin amplitude    = {G * a_s:.4f} m")
+    print(f"  basin tidal range  = {2.0 * G * a_s:.4f} m")
+    print(f"  phase lag          = {lag_deg:.2f} deg  ({lag_h:.3f} h)")
+    print(f"  3w amplitude       = {abs(eta3):.4f} m")
+
+    if not ok:
+        print("  [WARNING] the fixed point did not converge")
+
+    if show_inlets:
+        print()
+        print("  inlet    |Q| [m3/s]     share   |Q3|/|Q1|")
+
+        absQ = np.abs(Q1)
+        total = absQ.sum()
+
+        for j in range(data["n"]):
+            print(
+                f"  {j + 1:>5}  {absQ[j]:12.1f}"
+                f"  {100.0 * absQ[j] / total:8.1f} %"
+                f"  {qratio[j]:10.3f}"
+            )
+
+    level, lines = third_harmonic_quality(qratio.max())
+
+    if level != "ok":
+        tag = "WARNING" if level == "warn" else "NOTE"
+
+        print()
+        print(
+            f"  [{tag}] worst |Q3|/|Q1| = {qratio.max():.2f} "
+            f"(inlet {int(np.argmax(qratio)) + 1})"
+        )
+
+        for line in lines:
+            print(f"           {line}")
+
+    print()
+
+
+def main():
+
+    parser = build_parser()
     args = parser.parse_args()
 
     data = read_input(args.input)
@@ -456,69 +690,84 @@ def main():
     N = data["n"]
     S = data["s"]
 
-    # Angular frequencies [rad/s]
-    omega_values = np.logspace(
-        np.log10(OMEGA_MIN),
-        np.log10(OMEGA_MAX),
-        N_OMEGA
-    )
+    # ------------------------------------------------------------
+    # Single point
+    # ------------------------------------------------------------
 
-    third = not args.no_third_harmonic
+    if args.omega is not None or args.period is not None:
+
+        if args.omega is not None and args.period is not None:
+            parser.error("give either --omega or --period, not both")
+
+        omega = (
+            args.omega
+            if args.omega is not None
+            else 2.0 * math.pi / (args.period * 3600.0)
+        )
+
+        if omega <= 0:
+            parser.error("the forcing frequency must be positive")
+
+        a_s = args.amplitude
+
+        if a_s is None:
+            a_s = data.get("a_s")
+
+        if a_s is None:
+            parser.error(
+                "no amplitude: pass --amplitude, "
+                "or set a_s in the input file"
+            )
+
+        if a_s <= 0:
+            parser.error("the amplitude must be positive")
+
+        report_point(data, omega, a_s, args.inlets)
+        return
+
+    # ------------------------------------------------------------
+    # Sweep
+    # ------------------------------------------------------------
+
+    amplitudes = np.array(args.amplitudes, dtype=float)
+
+    if np.any(amplitudes <= 0):
+        parser.error("all amplitudes must be positive")
+
+    if not (0 < args.omega_min < args.omega_max):
+        parser.error("0 < omega-min < omega-max is required")
+
+    if args.nfreq < 2:
+        parser.error("nfreq must be >= 2")
+
+    omega_values = np.logspace(
+        np.log10(args.omega_min),
+        np.log10(args.omega_max),
+        args.nfreq
+    )
 
     results = {}
     results3 = {}
-
-    print("=" * 72)
-    print("SINGLE BASIN, MULTIPLE INLETS — FREQUENCY / AMPLITUDE RESPONSE")
-    print("=" * 72)
-
-    print(f"N = {N}")
-    print(f"S = {S:.6g} m^2")
-
-    print()
-    print(
-        f"omega range = "
-        f"{OMEGA_MIN:.1e} - "
-        f"{OMEGA_MAX:.1e} rad/s"
-    )
+    worst_q = 0.0
+    worst_where = None
 
     print(
-        "a_s = "
-        + ", ".join(
-            f"{x:g}" for x in AMPLITUDES
-        )
-        + " m"
+        f"{N} inlets   S = {S:.4g} m2   "
+        f"omega {args.omega_min:.1e} - {args.omega_max:.1e} rad/s   "
+        f"({args.nfreq} points)"
     )
-
     print()
 
-    # --------------------------------------------------------
-    # Compute every curve
-    # --------------------------------------------------------
+    for a_s in amplitudes:
 
-    for a_s in AMPLITUDES:
+        A, Rh, inertance, rgeo = prepare_geometry(data, a_s)
 
-        A, Rh, inertance, rgeo = (
-            prepare_geometry(
-                data,
-                a_s
-            )
-        )
+        gain_values = np.empty_like(omega_values)
+        third_values = np.zeros_like(omega_values)
 
-        gain_values = np.empty_like(
-            omega_values
-        )
-
-        third_values = np.zeros_like(
-            omega_values
-        )
-
-        max_iterations = 0
         all_converged = True
 
-        for i, omega in enumerate(
-            omega_values
-        ):
+        for i, omega in enumerate(omega_values):
 
             G, phi, nit, ok = self_consistent_gain(
                 S,
@@ -529,25 +778,37 @@ def main():
 
             gain_values[i] = G
 
-            if third:
-                eta3, eta1 = third_harmonic(
-                    S,
+            eta3, eta1, Q3 = third_harmonic(
+                S,
+                omega,
+                a_s,
+                inertance,
+                rgeo,
+                G,
+                phi
+            )
+
+            third_values[i] = abs(eta3) / abs(eta1)
+
+            _, Q1 = complex_response(
+                S,
+                omega,
+                a_s,
+                inertance,
+                rgeo,
+                G,
+                phi
+            )
+
+            qratio = np.abs(Q3) / np.abs(Q1)
+
+            if qratio.max() > worst_q:
+                worst_q = float(qratio.max())
+                worst_where = (
+                    int(np.argmax(qratio)) + 1,
                     omega,
                     a_s,
-                    inertance,
-                    rgeo,
-                    G,
-                    phi
                 )
-
-                third_values[i] = (
-                    abs(eta3) / abs(eta1)
-                )
-
-            max_iterations = max(
-                max_iterations,
-                nit
-            )
 
             if not ok:
                 all_converged = False
@@ -555,58 +816,47 @@ def main():
         results[a_s] = gain_values
         results3[a_s] = third_values
 
-        imax = int(
-            np.argmax(gain_values)
-        )
+        imax = int(np.argmax(gain_values))
 
         line = (
-            f"a_s = {a_s:5.2f} m : "
-            f"Gmax = {gain_values[imax]:.5f} "
-            f"at omega = "
-            f"{omega_values[imax]:.4e} rad/s"
-            f"   max iter = {max_iterations}"
+            f"  a_s = {a_s:6g} m :  Gmax = {gain_values[imax]:.4f}"
+            f"  at T = "
+            f"{2 * math.pi / omega_values[imax] / 3600:8.3f} h"
         )
 
-        if third:
-            line += (
-                f"   max|eta3/eta1| = "
-                f"{third_values.max():.4f}"
-            )
-
-            if third_values.max() > 0.10:
-                line += "  [PERTURBATION SUSPECT]"
+        line += f"   3w/1w up to {third_values.max():.4f}"
 
         if not all_converged:
-            line += "  [WARNING]"
+            line += "   [WARNING: not converged]"
 
         print(line)
 
-    # --------------------------------------------------------
-    # Reference tidal frequencies
-    # --------------------------------------------------------
+    level, lines = third_harmonic_quality(worst_q)
 
-    # 24 h: diurnal reference
-    omega_diurnal = (
-        2.0 * math.pi
-        / (24.0 * 3600.0)
-    )
+    if level != "ok":
+        inlet, omega_bad, a_bad = worst_where
+        tag = "WARNING" if level == "warn" else "NOTE"
 
-    # M2: 12.42 h
-    omega_semidiurnal = (
-        2.0 * math.pi
-        / (12.42 * 3600.0)
-    )
+        print()
+        print(
+            f"  [{tag}] worst |Q3|/|Q1| = {worst_q:.2f} in inlet {inlet} "
+            f"at T = {2 * math.pi / omega_bad / 3600:.2f} h, "
+            f"a_s = {a_bad:g} m"
+        )
 
-    # --------------------------------------------------------
-    # Plot
-    # --------------------------------------------------------
+        for text in lines:
+            print(f"           {text}")
 
-    fig, ax = plt.subplots(
-        figsize=(10.5, 6.0)
-    )
+    # ------------------------------------------------------------
+    # Figure
+    # ------------------------------------------------------------
 
-    for a_s in AMPLITUDES:
+    omega_diurnal = 2.0 * math.pi / (24.0 * 3600.0)
+    omega_semidiurnal = 2.0 * math.pi / (12.42 * 3600.0)
 
+    fig, ax = plt.subplots(figsize=(10.5, 6.0))
+
+    for a_s in amplitudes:
         ax.plot(
             omega_values,
             results[a_s],
@@ -615,11 +865,7 @@ def main():
         )
 
     ax.set_xscale("log")
-
-    ax.set_xlim(
-        OMEGA_MIN,
-        OMEGA_MAX
-    )
+    ax.set_xlim(args.omega_min, args.omega_max)
 
     ax.set_xlabel(
         r"Angular frequency $\omega$ [rad/s]",
@@ -631,214 +877,76 @@ def main():
         fontsize=13
     )
 
-    ax.grid(
-        True,
-        which="both",
-        alpha=0.25
-    )
+    ax.grid(True, which="both", alpha=0.25)
 
-    # Tidal reference lines
-    ax.axvline(
-        omega_diurnal,
-        linestyle="--",
-        linewidth=1.0,
-        alpha=0.65
-    )
+    for omega_ref, label in (
+        (omega_diurnal, "24 h"),
+        (omega_semidiurnal, "M2"),
+    ):
+        if args.omega_min <= omega_ref <= args.omega_max:
+            ax.axvline(
+                omega_ref,
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.65
+            )
 
-    ax.axvline(
-        omega_semidiurnal,
-        linestyle="--",
-        linewidth=1.0,
-        alpha=0.65
-    )
+            ax.text(
+                omega_ref,
+                0.97 * ax.get_ylim()[1],
+                label,
+                rotation=90,
+                va="top",
+                ha="right"
+            )
 
-    ymax = ax.get_ylim()[1]
-
-    ax.text(
-        omega_diurnal,
-        0.97 * ymax,
-        "24 h",
-        rotation=90,
-        va="top",
-        ha="right"
-    )
-
-    ax.text(
-        omega_semidiurnal,
-        0.97 * ymax,
-        "M2",
-        rotation=90,
-        va="top",
-        ha="right"
-    )
-
-    ax.legend(
-        title="Sea amplitude",
-        fontsize=9,
-        ncol=2
-    )
+    ax.legend(title="Sea amplitude", fontsize=9, ncol=2)
 
     fig.tight_layout()
 
     input_path = Path(args.input)
 
     png_path = input_path.with_name(
-        input_path.stem
-        + "_response.png"
+        input_path.stem + "_gain.png"
     )
 
-    pdf_path = input_path.with_name(
-        input_path.stem
-        + "_response.pdf"
-    )
+    fig.savefig(png_path, dpi=220)
 
-    fig.savefig(
-        png_path,
-        dpi=220
-    )
+    if args.show:
+        plt.show()
+    else:
+        plt.close(fig)
 
-    fig.savefig(
-        pdf_path
-    )
-
-    # --------------------------------------------------------
-    # Third-harmonic figure
-    # --------------------------------------------------------
-
-    png3_path = None
-
-    if third:
-
-        fig3, ax3 = plt.subplots(
-            figsize=(10.5, 5.2)
-        )
-
-        for a_s in AMPLITUDES:
-
-            ax3.plot(
-                omega_values,
-                results3[a_s],
-                linewidth=1.6,
-                label=rf"$a_s={a_s:g}$ m"
-            )
-
-        ax3.axhline(
-            2.0 / 45.0,
-            color="k",
-            linestyle=":",
-            linewidth=1.0,
-            label=r"bound $2/45$"
-        )
-
-        ax3.set_xscale("log")
-
-        ax3.set_xlim(
-            OMEGA_MIN,
-            OMEGA_MAX
-        )
-
-        ax3.set_xlabel(
-            r"Angular frequency $\omega$ [rad/s]",
-            fontsize=13
-        )
-
-        ax3.set_ylabel(
-            r"$|\hat{\eta}^{(3)}|/|\hat{\eta}^{(1)}|$",
-            fontsize=13
-        )
-
-        ax3.grid(
-            True,
-            which="both",
-            alpha=0.25
-        )
-
-        ax3.legend(
-            fontsize=9,
-            ncol=2
-        )
-
-        fig3.tight_layout()
-
-        png3_path = input_path.with_name(
-            input_path.stem
-            + "_third_harmonic.png"
-        )
-
-        fig3.savefig(
-            png3_path,
-            dpi=220
-        )
-
-        if not args.show:
-            plt.close(fig3)
-
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # CSV
-    # --------------------------------------------------------
-
-    csv_path = input_path.with_name(
-        input_path.stem
-        + "_response.csv"
-    )
+    # ------------------------------------------------------------
 
     columns = [omega_values]
-
     headers = ["omega_rad_s"]
 
-    for a_s in AMPLITUDES:
+    for a_s in amplitudes:
+        columns.append(results[a_s])
+        headers.append(f"G_as_{a_s:g}m")
 
-        columns.append(
-            results[a_s]
-        )
+        columns.append(results3[a_s])
+        headers.append(f"eta3_over_eta1_as_{a_s:g}m")
 
-        headers.append(
-            f"G_as_{a_s:g}m"
-        )
-
-        if third:
-            columns.append(
-                results3[a_s]
-            )
-
-            headers.append(
-                f"eta3_over_eta1_as_{a_s:g}m"
-            )
-
-    table = np.column_stack(
-        columns
+    csv_path = input_path.with_name(
+        input_path.stem + "_gain.csv"
     )
 
     np.savetxt(
         csv_path,
-        table,
+        np.column_stack(columns),
         delimiter=",",
         header=",".join(headers),
         comments=""
     )
 
     print()
-    print(
-        f"PNG: {png_path}"
-    )
+    print(f"  {png_path}")
+    print(f"  {csv_path}")
 
-    print(
-        f"PDF: {pdf_path}"
-    )
-
-    print(
-        f"CSV: {csv_path}"
-    )
-
-    if png3_path is not None:
-        print(
-            f"PNG: {png3_path}"
-        )
-
-    if args.show:
-        plt.show()
-    else:
-        plt.close(fig)
 
 
 if __name__ == "__main__":

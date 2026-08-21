@@ -619,6 +619,40 @@ def solve_network(
 # THIRD HARMONIC (PERTURBATIVE)
 # ======================================================================
 
+# Quality of the third harmonic, judged on the per-channel ratio |Q3|/|Q1|.
+# For a single basin that ratio stays around 0.1 - 0.15 (it is exactly 2/15 in
+# the friction-dominated limit of a single inlet), and validation against a
+# time-domain integration of the same equations puts the error on the 3*omega
+# amplitude within about 10% there. Larger values mean 3*omega is close to a
+# resonance of the network, where the drag linearisation - calibrated on the
+# fundamental discharge - underestimates its own damping.
+# The fundamental is not affected in either case.
+Q3_CAUTION = 0.20
+Q3_WARN = 0.50
+
+
+def third_harmonic_quality(ratio_max):
+    """Return (level, lines) describing how far the perturbation is trusted."""
+
+    if ratio_max > Q3_WARN:
+        return "warn", [
+            "3*omega is at or near a resonance of the network, so the "
+            "perturbation has",
+            "broken down: treat the 3w amplitude as indicative only. "
+            "The fundamental is",
+            "not affected.",
+        ]
+
+    if ratio_max > Q3_CAUTION:
+        return "caution", [
+            "3*omega is approaching a resonance of the network: the 3w "
+            "amplitude may be",
+            "in error by more than 10%. The fundamental is not affected.",
+        ]
+
+    return "ok", []
+
+
 def third_harmonic_network(
     bays,
     boundaries,
@@ -747,7 +781,6 @@ def run_sweep(
     tol,
     itmax,
     relax,
-    third=True,
 ):
     bay_names = list(bays.keys())
     channel_names = [ch.name for ch in channels]
@@ -763,8 +796,8 @@ def run_sweep(
     iterations = np.empty((Na, Nw), dtype=int)
     converged = np.empty((Na, Nw), dtype=bool)
 
-    eta3_arr = np.zeros((Na, Nw, M), dtype=complex) if third else None
-    Q3_arr = np.zeros((Na, Nw, Ne), dtype=complex) if third else None
+    eta3_arr = np.zeros((Na, Nw, M), dtype=complex)
+    Q3_arr = np.zeros((Na, Nw, Ne), dtype=complex)
 
     for ia, a_s in enumerate(amplitudes):
         # Continuation in frequency:
@@ -792,19 +825,18 @@ def run_sweep(
             iterations[ia, iw] = nit
             converged[ia, iw] = ok
 
-            if third:
-                eta3, Q3 = third_harmonic_network(
-                    bays,
-                    boundaries,
-                    channels,
-                    omega,
-                    Q,
-                )
+            eta3, Q3 = third_harmonic_network(
+                bays,
+                boundaries,
+                channels,
+                omega,
+                Q,
+            )
 
-                eta3_arr[ia, iw, :] = [
-                    eta3[name] for name in bay_names
-                ]
-                Q3_arr[ia, iw, :] = Q3
+            eta3_arr[ia, iw, :] = [
+                eta3[name] for name in bay_names
+            ]
+            Q3_arr[ia, iw, :] = Q3
 
             R_guess = R
 
@@ -926,8 +958,6 @@ def save_plots(
     omega_24h = 2.0 * math.pi / (24.0 * 3600.0)
     omega_M2 = 2.0 * math.pi / (12.42 * 3600.0)
 
-    eta3 = result.get("eta3")
-
     for im, bay_name in enumerate(bay_names):
         fig, ax = plt.subplots(
             figsize=(9.5, 5.8)
@@ -1018,78 +1048,6 @@ def save_plots(
         else:
             plt.close(fig)
 
-        if eta3 is None:
-            continue
-
-        # Relative amplitude of the first secondary harmonic
-        fig, ax = plt.subplots(
-            figsize=(9.5, 5.0)
-        )
-
-        for ia, a_s in enumerate(amplitudes):
-            ratio = (
-                np.abs(eta3[ia, :, im])
-                / np.abs(eta[ia, :, im])
-            )
-
-            ax.plot(
-                omega_values,
-                ratio,
-                linewidth=1.6,
-                label=rf"$a_s={a_s:g}$ m",
-            )
-
-        ax.axhline(
-            2.0 / 45.0,
-            color="k",
-            linestyle=":",
-            linewidth=1.0,
-            label=r"single-bay bound $2/45$",
-        )
-
-        ax.set_xscale("log")
-        ax.set_xlim(
-            omega_values.min(),
-            omega_values.max(),
-        )
-
-        ax.set_xlabel(
-            r"Angular frequency $\omega$ [rad/s]"
-        )
-        ax.set_ylabel(
-            rf"$|\hat{{\eta}}^{{(3)}}_{{{bay_name}}}|"
-            rf"/|\hat{{\eta}}_{{{bay_name}}}|$"
-        )
-
-        ax.grid(
-            True,
-            which="both",
-            alpha=0.25,
-        )
-
-        ax.legend(
-            fontsize=8.5,
-            ncol=2,
-        )
-
-        fig.tight_layout()
-
-        png3 = out_dir / (
-            f"{stem}_third_{safe_name}.png"
-        )
-
-        fig.savefig(
-            png3,
-            dpi=220,
-        )
-
-        generated.append(png3)
-
-        if show:
-            plt.show()
-        else:
-            plt.close(fig)
-
     return generated
 
 
@@ -1097,11 +1055,22 @@ def save_plots(
 # MAIN
 # ======================================================================
 
-def main():
+def build_parser():
+
     parser = argparse.ArgumentParser(
         description=(
-            "Frequency-domain tidal response of a network of bays and channels."
-        )
+            "Tidal gain of a network of semi-enclosed basins "
+            "connected by frictional channels."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  one point   : %(prog)s network.txt --period 12.42 "
+            "--amplitude 0.5\n"
+            "  full sweep  : %(prog)s network.txt\n"
+            "  custom sweep: %(prog)s network.txt --amplitudes 0.2 1 "
+            "--nfreq 800"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser.add_argument(
@@ -1109,103 +1078,295 @@ def main():
         help="input .txt file describing the network",
     )
 
-    parser.add_argument(
+    point = parser.add_argument_group(
+        "single point (give --omega or --period to use it)"
+    )
+
+    point.add_argument(
+        "--omega",
+        type=float,
+        help="forcing angular frequency [rad/s]",
+    )
+
+    point.add_argument(
+        "--period",
+        type=float,
+        help="forcing period [hours], alternative to --omega",
+    )
+
+    point.add_argument(
+        "--amplitude",
+        type=float,
+        help="sea amplitude a_s [m]",
+    )
+
+    point.add_argument(
+        "--channels",
+        action="store_true",
+        help="also list the discharge carried by each channel",
+    )
+
+    sweep = parser.add_argument_group("sweep")
+
+    sweep.add_argument(
+        "--amplitudes",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_AMPLITUDES),
+        help="sea amplitudes to compare [m]",
+    )
+
+    sweep.add_argument(
         "--omega-min",
         type=float,
         default=DEFAULT_OMEGA_MIN,
         help="minimum angular frequency [rad/s]",
     )
 
-    parser.add_argument(
+    sweep.add_argument(
         "--omega-max",
         type=float,
         default=DEFAULT_OMEGA_MAX,
         help="maximum angular frequency [rad/s]",
     )
 
-    parser.add_argument(
+    sweep.add_argument(
         "--nfreq",
         type=int,
         default=DEFAULT_NFREQ,
         help="number of log-spaced frequencies",
     )
 
-    parser.add_argument(
-        "--amplitudes",
-        type=float,
-        nargs="+",
-        default=list(DEFAULT_AMPLITUDES),
-        help="list of incoming amplitudes a_s [m]",
+    sweep.add_argument(
+        "--npz",
+        action="store_true",
+        help="also save the full complex fields to a .npz archive",
     )
 
-    parser.add_argument(
+    sweep.add_argument(
+        "--show",
+        action="store_true",
+        help="display the plots in addition to saving them",
+    )
+
+    numerics = parser.add_argument_group("numerics")
+
+    numerics.add_argument(
         "--tol",
         type=float,
         default=DEFAULT_TOL,
         help="fixed-point tolerance",
     )
 
-    parser.add_argument(
+    numerics.add_argument(
         "--itmax",
         type=int,
         default=DEFAULT_ITMAX,
         help="maximum number of iterations",
     )
 
-    parser.add_argument(
+    numerics.add_argument(
         "--relax",
         type=float,
         default=DEFAULT_RELAX,
         help="relaxation factor, 0 < relax <= 1",
     )
 
-    parser.add_argument(
-        "--no-third-harmonic",
-        action="store_true",
-        help=(
-            "skip the perturbative 3*omega correction "
-            "(it costs about 4%% of the run time)"
-        ),
+    return parser
+
+
+def report_point(
+    bays,
+    boundaries,
+    channels,
+    omega,
+    a_s,
+    show_channels,
+    tol,
+    itmax,
+    relax,
+):
+    """Print the response of every basin at one frequency, one amplitude."""
+
+    eta, Q, R, Y, nit, ok = solve_network(
+        bays=bays,
+        boundaries=boundaries,
+        channels=channels,
+        omega=omega,
+        a_s=a_s,
+        tol=tol,
+        itmax=itmax,
+        relax=relax,
     )
 
-    parser.add_argument(
-        "--show",
-        action="store_true",
-        help="display the plots in addition to saving them",
+    eta3, Q3 = third_harmonic_network(
+        bays,
+        boundaries,
+        channels,
+        omega,
+        Q,
     )
 
+    qratio = np.abs(Q3) / np.abs(Q)
+
+    period_h = 2.0 * math.pi / omega / 3600.0
+
+    print()
+    print(
+        f"Forcing    a_s = {a_s:g} m"
+        f"     omega = {omega:.4e} rad/s"
+        f"     T = {period_h:.3f} h"
+    )
+    print()
+
+    width = max(
+        [len("basin")]
+        + [len(name) for name in bays]
+    )
+
+    print(
+        f"  {'basin':<{width}}"
+        f"    gain   amplitude [m]   range [m]"
+        f"   lag [deg]   lag [h]   3w amp [m]"
+    )
+
+    for name in bays:
+        z = eta[name]
+        G = abs(z) / a_s
+        lag_deg = -math.degrees(cmath.phase(z))
+        lag_h = lag_deg / 360.0 * period_h
+
+        print(
+            f"  {name:<{width}}"
+            f"  {G:7.4f}"
+            f"  {abs(z):13.4f}"
+            f"  {2.0 * abs(z):10.4f}"
+            f"  {lag_deg:10.2f}"
+            f"  {lag_h:8.3f}"
+            f"  {abs(eta3[name]):11.4f}"
+        )
+
+    if not ok:
+        print()
+        print("  [WARNING] the fixed point did not converge")
+
+    if show_channels:
+        cwidth = max(
+            [len("channel")]
+            + [len(ch.name) for ch in channels]
+        )
+
+        nwidth = max(
+            [len(ch.node1) for ch in channels]
+            + [len(ch.node2) for ch in channels]
+        )
+
+        link_width = max(
+            2 * nwidth + 4,
+            len("from -> to"),
+        )
+
+        print()
+        print(
+            f"  {'channel':<{cwidth}}"
+            f"  {'from -> to':<{link_width}}"
+            f"  {'|Q| [m3/s]':>12}"
+            f"  {'lag [deg]':>10}"
+            f"  {'|Q3|/|Q1|':>10}"
+        )
+
+        for e, ch in enumerate(channels):
+            link = f"{ch.node1:>{nwidth}} -> {ch.node2:<{nwidth}}"
+
+            print(
+                f"  {ch.name:<{cwidth}}"
+                f"  {link:<{link_width}}"
+                f"  {abs(Q[e]):12.1f}"
+                f"  {-math.degrees(cmath.phase(Q[e])):10.2f}"
+                f"  {qratio[e]:10.3f}"
+            )
+
+    level, lines = third_harmonic_quality(qratio.max())
+
+    if level != "ok":
+        worst = channels[int(np.argmax(qratio))].name
+        tag = "WARNING" if level == "warn" else "NOTE"
+
+        print()
+        print(
+            f"  [{tag}] worst |Q3|/|Q1| = {qratio.max():.2f} "
+            f"in channel {worst}"
+        )
+
+        for line in lines:
+            print(f"           {line}")
+
+    print()
+
+
+def main():
+
+    parser = build_parser()
     args = parser.parse_args()
 
-    if not (
-        0 < args.omega_min < args.omega_max
-    ):
-        raise ValueError(
-            "0 < omega_min < omega_max is required"
+    if not (0 < args.relax <= 1):
+        parser.error("relax must lie between 0 and 1")
+
+    bays, boundaries, channels = read_network(args.input)
+
+    # ------------------------------------------------------------
+    # Single point
+    # ------------------------------------------------------------
+
+    if args.omega is not None or args.period is not None:
+
+        if args.omega is not None and args.period is not None:
+            parser.error("give either --omega or --period, not both")
+
+        omega = (
+            args.omega
+            if args.omega is not None
+            else 2.0 * math.pi / (args.period * 3600.0)
         )
+
+        if omega <= 0:
+            parser.error("the forcing frequency must be positive")
+
+        if args.amplitude is None:
+            parser.error(
+                "a single-point run needs --amplitude"
+            )
+
+        if args.amplitude <= 0:
+            parser.error("the amplitude must be positive")
+
+        report_point(
+            bays,
+            boundaries,
+            channels,
+            omega,
+            args.amplitude,
+            args.channels,
+            args.tol,
+            args.itmax,
+            args.relax,
+        )
+        return
+
+    # ------------------------------------------------------------
+    # Sweep
+    # ------------------------------------------------------------
+
+    if not (0 < args.omega_min < args.omega_max):
+        parser.error("0 < omega-min < omega-max is required")
 
     if args.nfreq < 2:
-        raise ValueError(
-            "nfreq must be >= 2"
-        )
+        parser.error("nfreq must be >= 2")
 
-    amplitudes = np.array(
-        args.amplitudes,
-        dtype=float,
-    )
+    amplitudes = np.array(args.amplitudes, dtype=float)
 
     if np.any(amplitudes <= 0):
-        raise ValueError(
-            "All amplitudes must be positive"
-        )
-
-    if not (0 < args.relax <= 1):
-        raise ValueError(
-            "relax must lie between 0 and 1"
-        )
-
-    bays, boundaries, channels = read_network(
-        args.input
-    )
+        parser.error("all amplitudes must be positive")
 
     omega_values = np.logspace(
         math.log10(args.omega_min),
@@ -1213,22 +1374,11 @@ def main():
         args.nfreq,
     )
 
-    print("=" * 78)
-    print("SEMI-ENCLOSED BASIN NETWORK — HARMONIC RESPONSE")
-    print("=" * 78)
-    print(f"Bays:       {len(bays)}")
-    print(f"Boundaries: {len(boundaries)}")
-    print(f"Channels:   {len(channels)}")
     print(
-        f"omega:      {args.omega_min:.3e} - "
-        f"{args.omega_max:.3e} rad/s "
+        f"{len(bays)} basins, {len(channels)} channels, "
+        f"{len(boundaries)} boundaries   "
+        f"omega {args.omega_min:.1e} - {args.omega_max:.1e} rad/s   "
         f"({args.nfreq} points)"
-    )
-    print(
-        "a_s [m]:    "
-        + ", ".join(
-            f"{x:g}" for x in amplitudes
-        )
     )
     print()
 
@@ -1241,111 +1391,80 @@ def main():
         tol=args.tol,
         itmax=args.itmax,
         relax=args.relax,
-        third=not args.no_third_harmonic,
     )
 
-    n_ok = int(
-        np.count_nonzero(
-            result["converged"]
-        )
-    )
-    n_tot = result["converged"].size
-
-    print(
-        f"Converged: {n_ok}/{n_tot}"
-    )
-    print(
-        "Iterations: "
-        f"min={result['iterations'].min()}, "
-        f"median={int(np.median(result['iterations']))}, "
-        f"max={result['iterations'].max()}"
+    n_bad = int(
+        result["converged"].size
+        - np.count_nonzero(result["converged"])
     )
 
-    # Quick report: maxima for each bay/amplitude
-    for im, bay_name in enumerate(
-        result["bay_names"]
-    ):
-        print()
-        print(f"[{bay_name}]")
+    for im, bay_name in enumerate(result["bay_names"]):
+        print(f"  [{bay_name}]")
 
         for ia, a_s in enumerate(amplitudes):
-            G = (
-                np.abs(
-                    result["eta"][ia, :, im]
-                )
-                / a_s
-            )
-
+            G = np.abs(result["eta"][ia, :, im]) / a_s
             j = int(np.argmax(G))
 
             line = (
-                f"  a_s={a_s:6g} m : "
-                f"Gmax={G[j]:.6g}  "
-                f"omega={omega_values[j]:.4e} rad/s  "
-                f"T={2*math.pi/omega_values[j]/3600:.3f} h"
+                f"    a_s = {a_s:6g} m :  Gmax = {G[j]:.4f}"
+                f"  at T = "
+                f"{2 * math.pi / omega_values[j] / 3600:8.3f} h"
             )
 
-            if result["eta3"] is not None:
-                ratio = (
-                    np.abs(result["eta3"][ia, :, im])
-                    / np.abs(result["eta"][ia, :, im])
-                )
+            ratio = (
+                np.abs(result["eta3"][ia, :, im])
+                / np.abs(result["eta"][ia, :, im])
+            )
 
-                line += (
-                    f"   max|eta3/eta1|={ratio.max():.4f}"
-                )
-
-                if ratio.max() > 0.10:
-                    line += "  [PERTURBATION SUSPECT]"
+            line += f"   3w/1w up to {ratio.max():.4f}"
 
             print(line)
+
+    if n_bad:
+        print()
+        print(
+            f"  [WARNING] {n_bad} of "
+            f"{result['converged'].size} points did not converge"
+        )
+
+    # Is the third harmonic still a perturbation everywhere?
+    qratio = (
+        np.abs(result["Q3"])
+        / np.abs(result["Q"])
+    )
+
+    level, lines = third_harmonic_quality(qratio.max())
+
+    if level != "ok":
+        ia, iw, ie = np.unravel_index(
+            int(np.argmax(qratio)),
+            qratio.shape,
+        )
+
+        tag = "WARNING" if level == "warn" else "NOTE"
+
+        print()
+        print(
+            f"  [{tag}] worst |Q3|/|Q1| = {qratio.max():.2f} "
+            f"in channel {result['channel_names'][ie]} "
+            f"at T = {2 * math.pi / omega_values[iw] / 3600:.2f} h, "
+            f"a_s = {amplitudes[ia]:g} m"
+        )
+
+        for line in lines:
+            print(f"           {line}")
 
     input_path = Path(args.input)
     out_dir = input_path.parent
     stem = input_path.stem
 
-    csv_path = out_dir / (
-        stem + "_response.csv"
-    )
-
-    npz_path = out_dir / (
-        stem + "_response.npz"
-    )
+    csv_path = out_dir / (stem + "_gain.csv")
 
     save_csv(
         csv_path,
         result,
         omega_values,
         amplitudes,
-    )
-
-    np.savez_compressed(
-        npz_path,
-        omega=omega_values,
-        amplitudes=amplitudes,
-        bay_names=np.array(
-            result["bay_names"],
-            dtype=str,
-        ),
-        channel_names=np.array(
-            result["channel_names"],
-            dtype=str,
-        ),
-        eta=result["eta"],
-        Q=result["Q"],
-        R=result["R"],
-        eta3=(
-            result["eta3"]
-            if result["eta3"] is not None
-            else np.zeros(0, dtype=complex)
-        ),
-        Q3=(
-            result["Q3"]
-            if result["Q3"] is not None
-            else np.zeros(0, dtype=complex)
-        ),
-        iterations=result["iterations"],
-        converged=result["converged"],
     )
 
     plots = save_plots(
@@ -1358,11 +1477,41 @@ def main():
     )
 
     print()
-    print(f"CSV: {csv_path}")
-    print(f"NPZ: {npz_path}")
+    print(f"  {csv_path}")
 
-    for p in plots:
-        print(f"PNG: {p}")
+    for path in plots:
+        print(f"  {path}")
+
+    if args.npz:
+        npz_path = out_dir / (stem + "_fields.npz")
+
+        np.savez_compressed(
+            npz_path,
+            omega=omega_values,
+            amplitudes=amplitudes,
+            bay_names=np.array(result["bay_names"], dtype=str),
+            channel_names=np.array(
+                result["channel_names"], dtype=str
+            ),
+            eta=result["eta"],
+            Q=result["Q"],
+            R=result["R"],
+            eta3=(
+                result["eta3"]
+                if result["eta3"] is not None
+                else np.zeros(0, dtype=complex)
+            ),
+            Q3=(
+                result["Q3"]
+                if result["Q3"] is not None
+                else np.zeros(0, dtype=complex)
+            ),
+            iterations=result["iterations"],
+            converged=result["converged"],
+        )
+
+        print(f"  {npz_path}")
+
 
 
 if __name__ == "__main__":
