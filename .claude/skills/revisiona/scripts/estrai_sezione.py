@@ -149,6 +149,9 @@ def main():
         for h in heads:
             print("  " * h["level"] + f"- {h['title']}", file=sys.stderr)
         sys.exit(2)
+    if len(cands) > 1 and a.struttura:
+        # in modalita' struttura si rivede un capitolo: preferisci i \chapter
+        cands = [h for h in cands if h["level"] <= 1] or cands
     if len(cands) > 1:
         print("Piu' sezioni corrispondono, specifica meglio (o usa label:...):", file=sys.stderr)
         for h in cands:
