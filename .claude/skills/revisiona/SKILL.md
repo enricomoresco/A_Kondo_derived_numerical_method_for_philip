@@ -42,5 +42,6 @@ Parla con l'utente in italiano, in modo sintetico.
 
 ## Regole
 - Non modificare mai i file `.tex` o `.bib` della tesi se non al passo 11.
+- Se un agente non riesce a scrivere il suo report (Write bloccato) e lo restituisce come testo, salvalo tu nel file previsto in `WD` prima di proseguire.
 - Se un agente fallisce o produce un report vuoto, dillo e chiedi se rilanciarlo; non proseguire come se avesse funzionato.
 - A fine lavoro, una riga di sintesi: quante proposte applicate, quante rifiutate, quanti TODO e citazioni da verificare restano.
